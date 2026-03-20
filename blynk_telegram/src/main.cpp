@@ -34,6 +34,7 @@ char pass[] = "";
 #define DIO      19
 #define DHT_PIN  16
 #define MQ2_PIN  34
+#define PIR_PIN  27          // [PIR] định nghĩa pin PIR
 #define OLED_SDA 13
 #define OLED_SCL 12
 
@@ -50,7 +51,7 @@ UniversalTelegramBot bot(BOT_TOKEN, secured_client);
 
 //=========== VARIABLE ===========
 ulong currentMiliseconds = 0;
-bool  blueButtonON       = true;
+bool  blueButtonON       = false;
 
 float temperature = 0;
 float humidity    = 0;
@@ -72,6 +73,9 @@ int   tgGas            = 0;
 bool dhtReady = false;
 bool gasReady = false;
 
+// [PIR] biến trạng thái chuyển động
+bool motionDetected   = false;
+
 //=========== PROTOTYPE ===========
 bool IsReady(ulong &ulTimer, uint32_t milisecond);
 void printEvent(String msg);
@@ -81,6 +85,7 @@ void updateBlueButton();
 void uptimeBlynk();
 void readDHT22();
 void readGas();
+void readPIR();                 // [PIR] prototype
 void displayOLED();
 void handleTelegramMessages();
 void sendTelegramWeather();
@@ -91,6 +96,11 @@ void setup() {
 
   pinMode(pinBLED, OUTPUT);
   pinMode(btnBLED, INPUT_PULLUP);
+  pinMode(PIR_PIN, INPUT);     // [PIR] khai báo chân PIR
+
+  digitalWrite(pinBLED, LOW);
+  display.setBrightness(0, false);
+  display.clear();
 
   display.setBrightness(7);
   dht.setup(DHT_PIN, DHTesp::DHT22);
@@ -121,6 +131,7 @@ void loop() {
   updateBlueButton();
   readDHT22();
   readGas();
+  readPIR();                   // [PIR] gọi hàm đọc PIR trong loop
   displayOLED();
   handleTelegramMessages();
   printSensor();
@@ -190,22 +201,33 @@ bool IsReady(ulong &ulTimer, uint32_t milisecond) {
 
 //=========== BUTTON ===========
 void updateBlueButton() {
-  static ulong lastTime  = 0;
-  static int   lastValue = HIGH;
+  static ulong lastTime = 0;
+  static int lastValue = HIGH;
 
   if (!IsReady(lastTime, 50)) return;
 
   int v = digitalRead(btnBLED);
-  if (v == lastValue) return;
+
+  // phát hiện cạnh xuống (HIGH -> LOW)
+  if (lastValue == HIGH && v == LOW) {
+
+    blueButtonON = !blueButtonON;
+
+    digitalWrite(pinBLED, blueButtonON ? HIGH : LOW);
+
+    if (blueButtonON) {
+      display.setBrightness(7, true);   // bật display
+    } else {
+      display.setBrightness(0, false);  // tắt display
+      display.clear();
+    }
+
+    Blynk.virtualWrite(V1, blueButtonON);
+
+    printEvent("[BTN   ] Toggle -> " + String(blueButtonON ? "ON" : "OFF"));
+  }
+
   lastValue = v;
-  if (v == LOW) return;
-
-  blueButtonON = !blueButtonON;
-  digitalWrite(pinBLED, blueButtonON ? HIGH : LOW);
-  if (!blueButtonON) display.clear();
-
-  Blynk.virtualWrite(V1, blueButtonON);
-  printEvent("[BTN   ] Blue Light " + String(blueButtonON ? "ON" : "OFF"));
 }
 
 //=========== UPTIME ===========
@@ -250,6 +272,36 @@ void readGas() {
   Blynk.virtualWrite(V4, gasValue);
 
   gasReady = true;
+}
+
+//=========== PIR ===========
+// [PIR] Đọc cảm biến chuyển động, gửi Telegram khi phát hiện
+// - Gửi 1 lần duy nhất khi bắt đầu có chuyển động (cạnh lên)
+// - Gửi thông báo "hết chuyển động" khi trở về trạng thái nghỉ
+// - Thêm cooldown 10s để tránh spam nếu PIR liên tục báo
+void readPIR() {
+  static ulong lastAlertTime = 0;           // cooldown chống spam
+
+  bool pirState = digitalRead(PIR_PIN);
+
+  if (pirState == HIGH) {
+    if (!motionDetected) {
+      // cạnh lên: vừa phát hiện chuyển động
+      if (millis() - lastAlertTime >= 10000UL) {
+        bot.sendMessage(CHAT_ID, "🚨 *Phát hiện chuyển động!*", "Markdown");
+        printEvent("[PIR   ] Phat hien chuyen dong → Telegram sent");
+        lastAlertTime = millis();
+      }
+      motionDetected = true;
+    }
+  } else {
+    if (motionDetected) {
+      // cạnh xuống: chuyển động kết thúc
+      bot.sendMessage(CHAT_ID, "✅ *Không còn chuyển động.*", "Markdown");
+      printEvent("[PIR   ] Het chuyen dong → Telegram sent");
+      motionDetected = false;
+    }
+  }
 }
 
 //=========== OLED ===========
